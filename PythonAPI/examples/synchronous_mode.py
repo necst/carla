@@ -129,9 +129,11 @@ def main():
     font = get_font()
     clock = pygame.time.Clock()
 
+    # create client
     client = carla.Client('dwarf7.local.necst.it', 2000)
     client.set_timeout(2.0)
 
+    # access world from client
     world = client.get_world()
 
     try:
