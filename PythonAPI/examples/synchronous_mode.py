@@ -5,6 +5,7 @@
 #
 # This work is licensed under the terms of the MIT license.
 # For a copy, see <https://opensource.org/licenses/MIT>.
+import csv
 
 import glob
 import os
@@ -89,6 +90,12 @@ class CarlaSyncMode(object):
             if data.frame == self.frame:
                 return data
 
+# function to process rgb data
+def process_rgb_data(image, sensor_width, sensor_height):
+    image = np.array(image.raw_data)
+    image = image.reshape((sensor_height, sensor_width, 4))
+    image = image[:, :, :3]  # taking out alpha channel
+    return image
 
 def draw_image(surface, image, blend=False):
     array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
@@ -107,6 +114,7 @@ def get_font():
     font = default_font if default_font in fonts else fonts[0]
     font = pygame.font.match_font(font)
     return pygame.font.Font(font, 14)
+
 
 
 def should_quit():
@@ -136,6 +144,16 @@ def main():
     # access world from client
     world = client.get_world()
 
+    # enable synchronous mode
+    print('Enabling synchronous mode')
+    settings = world.get_settings()
+    settings.synchronous_mode = True
+
+    # set fixed delta seconds
+    print('Setting fixed delta seconds')
+    settings.fixed_delta_seconds = 0.05
+    world.apply_settings(settings)
+
     try:
         m = world.get_map()
         start_pose = random.choice(m.get_spawn_points())
@@ -149,11 +167,37 @@ def main():
         actor_list.append(vehicle)
         vehicle.set_simulate_physics(False)
 
+        # add rgb camera
+
+        sensor_width = 640
+        sensor_height = 480
+        fov = 110
+
+        rgb_camera_bp = blueprint_library.find('sensor.camera.rgb')
+        rgb_camera_bp.set_attribute('image_size_x', f'{sensor_width}')
+        rgb_camera_bp.set_attribute('image_size_y', f'{sensor_height}')
+        rgb_camera_bp.set_attribute('fov', f'{fov}')
         camera_rgb = world.spawn_actor(
-            blueprint_library.find('sensor.camera.rgb'),
+            rgb_camera_bp,
             carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)),
             attach_to=vehicle)
         actor_list.append(camera_rgb)
+
+        #add IMU sensor
+
+        imu_sensor = world.spawn_actor(
+            blueprint_library.find('sensor.other.imu'),
+            carla.Transform(),
+            attach_to=vehicle)
+        actor_list.append(imu_sensor)
+
+        # make a sync queue for the sensor data
+        # maybe not necessary
+        #image_queue = queue.Queue()
+        #camera_rgb.listen(image_queue.put)
+        #frame = None
+
+        # add semseg camera
 
         camera_semseg = world.spawn_actor(
             blueprint_library.find('sensor.camera.semantic_segmentation'),
@@ -162,14 +206,23 @@ def main():
         actor_list.append(camera_semseg)
 
         # Create a synchronous mode context.
-        with CarlaSyncMode(world, camera_rgb, camera_semseg, fps=30) as sync_mode:
+        with CarlaSyncMode(world, camera_rgb, camera_semseg, imu_sensor, fps=30) as sync_mode:
             while True:
                 if should_quit():
                     return
                 clock.tick()
 
                 # Advance the simulation and wait for the data.
-                snapshot, image_rgb, image_semseg = sync_mode.tick(timeout=2.0)
+                snapshot, image_rgb, image_semseg, imu_data = sync_mode.tick(timeout=2.0)
+
+                #rgb_array = process_rgb_data(image_rgb, sensor_width, sensor_height)
+
+                #with open('_imu/imu.csv', 'w') as imufile:
+                    #imu_writer = csv.writer(imufile)
+                    #imu_writer.writerow([imu_data.accelerometer.x,imu_data.accelerometer.y,imu_data.accelerometer.z])
+
+                for n, item in enumerate([image_rgb, image_semseg]):
+                    item.save_to_disk('_out/%01d_%08d' % (n, sync_mode.frame))
 
                 # Choose the next waypoint and update the car location.
                 waypoint = random.choice(waypoint.next(1.5))
